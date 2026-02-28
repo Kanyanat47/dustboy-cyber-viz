@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Oracle DustBoy Zenith - Neural Matrix v6</title>
+    <title>Oracle DustBoy Zenith - Neural Matrix v6.1</title>
     <link
         href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap"
         rel="stylesheet">
@@ -217,6 +217,27 @@
             letter-spacing: 2px;
         }
 
+        /* SYSTEM LOG - HUD */
+        .sys-log {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            width: 320px;
+            height: 180px;
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid var(--border);
+            border-radius: 15px;
+            padding: 15px;
+            font-family: var(--font-mono);
+            font-size: 0.6rem;
+            color: #00ff00;
+            overflow-y: auto;
+            pointer-events: none;
+            z-index: 100;
+            display: flex;
+            flex-direction: column-reverse;
+        }
+
         /* LOADING: THE SINGULARITY */
         .loading {
             position: absolute;
@@ -251,18 +272,6 @@
                 opacity: 1;
             }
         }
-
-        /* 3D LABEL OVERLAYS */
-        .label-3d {
-            font-family: var(--font-mono);
-            font-size: 12px;
-            color: var(--secondary);
-            background: rgba(0, 0, 0, 0.8);
-            padding: 4px 10px;
-            border: 1px solid var(--secondary);
-            pointer-events: none;
-            border-radius: 4px;
-        }
     </style>
 </head>
 
@@ -276,7 +285,7 @@
     <div class="terminal">
         <div class="header">
             <div class="h1">ZENITH</div>
-            <div class="h2">Air Intelligence Matrix v6.0</div>
+            <div class="h2">Air Intelligence Matrix v6.1</div>
         </div>
 
         <div class="global-pulse">
@@ -289,7 +298,7 @@
                 <div class="p-lbl">Avg PM2.5</div>
             </div>
             <div class="pulse-item">
-                <div id="g-status" class="p-val" style="color:#00ff00">LINK</div>
+                <div id="g-status" class="p-val" style="color:#00ff00">LIVE</div>
                 <div class="p-lbl">Status</div>
             </div>
         </div>
@@ -297,9 +306,13 @@
         <div id="node-scroll" class="node-scroll">
             <div
                 style="text-align:center; padding: 100px 40px; color: rgba(255,255,255,0.15); font-size: 0.9rem; letter-spacing: 4px; text-transform: uppercase; line-height: 2;">
-                Listening for<br>MQTT Broadcast...
+                Listening for<br>Sensor Network...
             </div>
         </div>
+    </div>
+
+    <div id="sys-log" class="sys-log">
+        <div>[SYSTEM]: Initiating Datalink...</div>
     </div>
 
     <div id="canvas-container"></div>
@@ -314,46 +327,49 @@
 
         let scene, camera, renderer, controls;
         const nodes = new Map();
-        const MAP_CENTER = { lat: 16.82, lon: 100.26 };
-        const MAP_SCALE = 5000;
+        let MAP_CENTER = null; // Auto-set on first node
+        const MAP_SCALE = 6000;
 
         init();
+
+        function log(msg) {
+            const el = document.getElementById('sys-log');
+            const div = document.createElement('div');
+            div.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            el.appendChild(div);
+            if (el.childNodes.length > 50) el.removeChild(el.firstChild);
+        }
 
         function init() {
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x000000);
             scene.fog = new THREE.Fog(0x000000, 200, 1500);
 
-            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 4000);
-            camera.position.set(400, 300, 400);
+            camera = new THREE.PerspectiveCamera(50, (window.innerWidth - 480) / window.innerHeight, 1, 5000);
+            camera.position.set(500, 400, 500);
 
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setSize(window.innerWidth - 480, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.domElement.style.position = 'absolute';
+            renderer.domElement.style.right = '0';
             document.getElementById('canvas-container').appendChild(renderer.domElement);
 
             controls = new OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
             controls.autoRotate = true;
             controls.autoRotateSpeed = 0.5;
-            controls.minDistance = 200;
-            controls.maxDistance = 1200;
 
             // --- WORLD SETUP ---
-            const grid = new THREE.GridHelper(3000, 150, 0x111111, 0x080808);
+            const grid = new THREE.GridHelper(4000, 100, 0x151515, 0x0a0a0a);
             scene.add(grid);
 
-            const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+            const ambient = new THREE.AmbientLight(0xffffff, 0.6);
             scene.add(ambient);
-
-            const pLight = new THREE.PointLight(0x00e5ff, 10000, 1000);
-            pLight.position.set(0, 500, 400);
-            scene.add(pLight);
 
             animate();
             connectMQTT();
 
-            // Clear loading
             setTimeout(() => {
                 const ls = document.getElementById('loading');
                 ls.style.opacity = '0';
@@ -361,98 +377,109 @@
             }, 3000);
         }
 
-        function createNodeIn3D(topic, payload) {
+        function createNodeIn3D(id, payload) {
             const group = new THREE.Group();
+
+            // Spatial Mapping
             const x = (payload.lon - MAP_CENTER.lon) * MAP_SCALE;
             const z = (MAP_CENTER.lat - payload.lat) * MAP_SCALE;
             group.position.set(x, 0, z);
 
-            // Tech Pole
+            // Pole
             const pole = new THREE.Mesh(
-                new THREE.CylinderGeometry(1, 1, 200, 8),
-                new THREE.MeshStandardMaterial({ color: 0x111111, transparent: true, opacity: 0.3 })
+                new THREE.CylinderGeometry(1, 1, 300, 8),
+                new THREE.MeshStandardMaterial({ color: 0x111111, transparent: true, opacity: 0.2 })
             );
-            pole.position.y = 100;
+            pole.position.y = 150;
             group.add(pole);
 
-            // Data Singularity (Core Sphere)
+            // Core
             const core = new THREE.Mesh(
-                new THREE.SphereGeometry(6, 16, 16),
+                new THREE.SphereGeometry(8, 16, 16),
                 new THREE.MeshStandardMaterial({
-                    color: 0x00e5ff, emissive: 0x00e5ff, emissiveIntensity: 3,
+                    color: 0x00e5ff, emissive: 0x00e5ff, emissiveIntensity: 2,
                     transparent: true, opacity: 0.8
                 })
             );
             group.add(core);
 
-            // Aura Ring
+            // Ring
             const ring = new THREE.Mesh(
-                new THREE.TorusGeometry(12, 0.4, 8, 32),
+                new THREE.TorusGeometry(15, 0.5, 8, 32),
                 new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.2 })
             );
             ring.rotation.x = Math.PI / 2;
             group.add(ring);
 
-            // Focal Light
-            const light = new THREE.PointLight(0x00e5ff, 100, 80);
-            group.add(light);
-
             scene.add(group);
-            return { group, core, ring, light };
+            return { group, core, ring };
         }
 
         function updateNodeViz(node, d) {
             const pm25 = d.pm2_5 || d.pm25 || 0;
-            const targetY = Math.max(20, pm25 * 1.5);
+            const targetY = 50 + pm25 * 1.5;
 
+            node.group.position.y = THREE.MathUtils.lerp(node.group.position.y, 0, 0.1); // Keep on ground
             node.core.position.y = THREE.MathUtils.lerp(node.core.position.y, targetY, 0.1);
             node.ring.position.y = node.core.position.y;
-            node.light.position.y = node.core.position.y;
+            node.ring.rotation.z += 0.05;
 
-            node.ring.rotation.z += 0.04;
-
-            let col = new THREE.Color(0x00e5ff); // HEALTHY
-            if (pm25 > 37) col.setHex(0xffff00); // MODERATE
-            if (pm25 > 50) col.setHex(0xff9900); // RISK
-            if (pm25 > 90) col.setHex(0xff00ff); // CRISIS
+            let col = new THREE.Color(0x00e5ff);
+            if (pm25 > 37) col.setHex(0xffff00);
+            if (pm25 > 90) col.setHex(0xff00ff);
 
             node.core.material.color.lerp(col, 0.1);
             node.core.material.emissive.lerp(col, 0.1);
             node.ring.material.color.lerp(col, 0.1);
-            node.light.color.lerp(col, 0.1);
         }
 
         function connectMQTT() {
+            log("Connecting to DustBoy Bridge...");
             const client = mqtt.connect('wss://dustboy-wss-bridge.laris.workers.dev/mqtt');
+
             client.on('connect', () => {
+                log("CONNECTED to Broker");
                 client.subscribe('DUSTBOY/+/+/+/status');
-                document.getElementById('g-status').innerText = "LIVE";
             });
 
             client.on('message', (topic, message) => {
                 const raw = message.toString();
                 if (raw === "offline") return;
 
+                // Robust ID extraction: DUSTBOY/+/+/ID/status
+                const parts = topic.split('/');
+                const id = parts[3] || parts[parts.length - 2];
+                if (id === 'status' || !id) return;
+
                 try {
                     const payload = JSON.parse(raw);
                     const d = payload.d;
                     if (!d || !payload.lat) return;
 
-                    if (!nodes.has(topic)) {
-                        nodes.set(topic, createNodeIn3D(topic, payload));
+                    if (!MAP_CENTER) {
+                        MAP_CENTER = { lat: payload.lat, lon: payload.lon };
+                        log("NEXUS ANCHORED: Map orientation set.");
                     }
 
-                    const sensor = nodes.get(topic);
+                    if (!nodes.has(id)) {
+                        log(`NEW NODE: ${id}`);
+                        nodes.set(id, createNodeIn3D(id, payload));
+                    }
+
+                    const sensor = nodes.get(id);
                     updateNodeViz(sensor, d);
-                    updateZenithTerminal(topic, payload);
+                    updateTerminalUI(id, payload, topic);
                     updateGlobalMatrix();
-                } catch (e) { }
+                } catch (e) {
+                    // log(`ERR: JSON parse failed for ${id}`);
+                }
             });
+
+            client.on('error', (e) => log(`ERROR: ${e.message}`));
         }
 
-        function updateZenithTerminal(topic, payload) {
+        function updateTerminalUI(id, payload, topic) {
             const d = payload.d;
-            const id = topic.split('/').pop();
             const list = document.getElementById('node-scroll');
             let card = document.getElementById(`card-${id}`);
 
@@ -461,15 +488,11 @@
                 card = document.createElement('div');
                 card.id = `card-${id}`;
                 card.className = 'card';
-                card.onclick = () => focusZenithNode(topic);
+                card.onclick = () => focusNode(id);
                 list.insertBefore(card, list.firstChild);
             }
 
             const pm25 = (d.pm2_5 || d.pm25 || 0).toFixed(1);
-            const pm10 = (d.pm10 || 0).toFixed(0);
-            const temp = (d.temperature_c || 0).toFixed(1);
-            const humi = (d.humidity_rh || 0).toFixed(0);
-
             let statusCol = '#00e5ff';
             if (pm25 > 37) statusCol = '#ffff00';
             if (pm25 > 90) statusCol = '#ff00ff';
@@ -483,9 +506,9 @@
                     </div>
                 </div>
                 <div class="metrics-grid">
-                    <div class="m-box"><span class="m-val">${pm10}</span><span class="m-lbl">PM10</span></div>
-                    <div class="m-box"><span class="m-val">${temp}°C</span><span class="m-lbl">Temp</span></div>
-                    <div class="m-box"><span class="m-val">${humi}%</span><span class="m-lbl">Humid</span></div>
+                    <div class="m-box"><span class="m-val">${(d.pm10 || 0).toFixed(0)}</span><span class="m-lbl">PM10</span></div>
+                    <div class="m-box"><span class="m-val">${(d.temperature_c || 0).toFixed(1)}°C</span><span class="m-lbl">Temp</span></div>
+                    <div class="m-box"><span class="m-val">${(d.humidity_rh || 0).toFixed(0)}%</span><span class="m-lbl">Humid</span></div>
                 </div>
             `;
         }
@@ -497,7 +520,7 @@
             let sum = 0;
             let countValid = 0;
             nodes.forEach((v, k) => {
-                const c = document.getElementById(`card-${k.split('/').pop()}`);
+                const c = document.getElementById(`card-${k}`);
                 if (c) {
                     sum += parseFloat(c.querySelector('.c-pm-val').innerText);
                     countValid++;
@@ -510,15 +533,15 @@
             }
         }
 
-        function focusZenithNode(topic) {
-            const sensor = nodes.get(topic);
+        function focusNode(id) {
+            const sensor = nodes.get(id);
             if (!sensor) return;
 
             document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
-            document.getElementById(`card-${topic.split('/').pop()}`).classList.add('active');
+            document.getElementById(`card-${id}`).classList.add('active');
 
             const lookAt = sensor.group.position.clone().add(new THREE.Vector3(0, sensor.core.position.y, 0));
-            const camAt = lookAt.clone().add(new THREE.Vector3(120, 80, 120));
+            const camAt = lookAt.clone().add(new THREE.Vector3(150, 100, 150));
 
             controls.target.lerp(lookAt, 0.1);
             camera.position.lerp(camAt, 0.1);
@@ -531,9 +554,9 @@
         }
 
         window.addEventListener('resize', () => {
-            camera.aspect = (window.innerWidth) / window.innerHeight;
+            camera.aspect = (window.innerWidth - 480) / window.innerHeight;
             camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setSize(window.innerWidth - 480, window.innerHeight);
         });
     </script>
 </body>
